@@ -76,12 +76,11 @@ async def health():
 
 
 def build_upstream_url(path: str) -> str:
-    # Normalize: accept /v1/... or /... and map to NIM_BASE_URL (which includes /v1)
+    # Normalize: accept /v1/... or /... and map to NIM_BASE_URL (which already includes /v1).
+    # Strip repeated /v1 prefixes to tolerate misconfigured clients (e.g. /v1/v1/chat/completions).
     clean = path.lstrip("/")
-    if clean.startswith("v1/"):
-        clean = clean[3:]
-    elif clean == "v1":
-        clean = ""
+    while clean == "v1" or clean.startswith("v1/"):
+        clean = clean[3:] if clean.startswith("v1/") else ""
     if clean:
         return f"{NIM_BASE_URL}/{clean}"
     return NIM_BASE_URL
@@ -127,6 +126,9 @@ async def proxy_request(request: Request, path: str):
     body = await request.body()
     client: httpx.AsyncClient = request.app.state.client
 
+    is_stream_request = b'"stream":true' in body.replace(b" ", b"")
+    logger.info("Proxying %s %s -> %s stream=%s", request.method, request.url.path, upstream_url, is_stream_request)
+
     req = client.build_request(
         method=request.method,
         url=upstream_url,
@@ -161,6 +163,12 @@ async def proxy_request(request: Request, path: str):
     is_stream = "text/event-stream" in content_type
 
     if is_stream:
+        response_headers["Cache-Control"] = "no-cache"
+        response_headers["X-Accel-Buffering"] = "no"
+        # Avoid duplicate content-type when media_type is set by StreamingResponse.
+        response_headers.pop("content-type", None)
+        response_headers.pop("Content-Type", None)
+
         async def stream_generator():
             try:
                 async for chunk in upstream_resp.aiter_bytes():
