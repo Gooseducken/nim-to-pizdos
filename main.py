@@ -15,6 +15,8 @@ logger = logging.getLogger("nim-proxy")
 
 NIM_BASE_URL = os.getenv("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1").rstrip("/")
 NIM_API_KEY = os.getenv("NIM_API_KEY", "").strip()
+if NIM_API_KEY.lower().startswith("bearer "):
+    NIM_API_KEY = NIM_API_KEY[7:].strip()
 APP_NAME = "nim-to-openai-proxy"
 
 HOP_BY_HOP_HEADERS = {
@@ -87,18 +89,22 @@ def build_upstream_url(path: str) -> str:
 
 def forward_headers(request: Request) -> dict[str, str]:
     headers: dict[str, str] = {}
+    client_auth = None
     for key, value in request.headers.items():
         lk = key.lower()
         if lk in HOP_BY_HOP_HEADERS:
             continue
         if lk == "authorization":
-            # Pass through client-provided key; fallback handled below
-            headers[key] = value
+            client_auth = value
             continue
         headers[key] = value
 
-    if "authorization" not in {k.lower() for k in headers} and NIM_API_KEY:
+    # Prefer server-configured key. JanitorAI often sends a placeholder API key,
+    # which would cause NVIDIA NIM to return 401 if forwarded as-is.
+    if NIM_API_KEY:
         headers["Authorization"] = f"Bearer {NIM_API_KEY}"
+    elif client_auth:
+        headers["Authorization"] = client_auth
 
     headers["Accept-Encoding"] = "identity"
     return headers
@@ -136,6 +142,13 @@ async def proxy_request(request: Request, path: str):
         return JSONResponse(
             status_code=502,
             content={"error": {"message": f"Upstream request failed: {exc}", "type": "proxy_error"}},
+        )
+
+    if upstream_resp.status_code == 401:
+        logger.warning(
+            "Upstream returned 401 Unauthorized for %s. Verify NIM_API_KEY in Railway Variables "
+            "(value should be nvapi-..., no quotes/spaces) or disable placeholder client key.",
+            upstream_url,
         )
 
     response_headers = {
