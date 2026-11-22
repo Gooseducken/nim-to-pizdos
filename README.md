@@ -1,79 +1,80 @@
-# NIM to OpenAI Router
+# NVIDIA NIM → OpenAI-compatible прокси для JanitorAI
 
-Простой HTTP-роутер на FastAPI, который принимает запросы NVIDIA NIM-стиля к `/v1/chat/completions` и проксирует их в OpenAI-compatible upstream.
+Простой прокси-сервер, который принимает OpenAI-compatible запросы (например, от JanitorAI на Android) и перенаправляет их в [NVIDIA NIM](https://build.nvidia.com/).
 
-## Что делает
+## Куда вводить API ключ NVIDIA NIM
 
-- Принимает `POST /v1/chat/completions` (JSON, non-streaming).
-- Проверяет базовые поля: `model`, `messages`.
-- Отклоняет `stream=true` (в этой версии streaming не поддерживается).
-- Пересылает запрос в `{OPENAI_BASE_URL}/chat/completions`.
-- Использует `OPENAI_API_KEY` для upstream, либо прокидывает входящий `Authorization`, если upstream-ключ не задан.
-- Возвращает статус и JSON-ответ upstream как есть.
+1. Получите ключ на [build.nvidia.com](https://build.nvidia.com/) → профиль → **API Keys** → **Generate API Key**. Ключ выглядит как `nvapi-...`.
+2. На [Railway](https://railway.com/) откройте ваш проект/сервис → вкладка **Variables** → нажмите **New Variable**.
+3. Добавьте переменную:
+   - **Name:** `NIM_API_KEY`
+   - **Value:** ваш ключ `nvapi-...`
+4. Railway автоматически перезапустит сервис после сохранения переменной.
 
-> NVIDIA NIM Chat Completions API в основном OpenAI-compatible, поэтому роутер работает как прозрачный адаптер/прокси с конфигурируемым upstream.
+> Не вставляйте ключ в код и не коммитьте его в репозиторий. На Railway он хранится в Variables (переменных окружения).
 
-## Быстрый старт
+### Альтернатива
+
+Можно не задавать `NIM_API_KEY` на сервере, а передавать ключ в поле API Key на стороне JanitorAI — прокси пробросит заголовок `Authorization` дальше в NVIDIA NIM. Но для обычного использования удобнее задать ключ на Railway.
+
+## Деплой на Railway
+
+1. Загрузите этот репозиторий в GitHub.
+2. На [Railway](https://railway.com/) создайте **New Project** → **Deploy from GitHub repo** → выберите репозиторий.
+3. В **Variables** добавьте `NIM_API_KEY` (см. выше).
+4. Railway сам определит Python-проект по `requirements.txt` и запустит его по `Procfile`.
+5. В настройках сервиса откройте **Networking** → **Generate Domain**. Вы получите URL вида `https://your-app.up.railway.app`.
+
+## Настройка JanitorAI (Android)
+
+1. В JanitorAI откройте настройки API / Proxy.
+2. Выберите режим **OpenAI** / **Proxy** (OpenAI-compatible).
+3. В поле **API URL / Endpoint** укажите ваш Railway URL, например:
+   - `https://your-app.up.railway.app/v1`
+4. В поле **API Key**:
+   - если `NIM_API_KEY` задан на Railway — можно ввести любое непустое значение (или тот же ключ);
+   - если не задан — введите ваш `nvapi-...` ключ.
+5. Выберите модель NVIDIA NIM, например:
+   - `meta/llama-3.1-405b-instruct`
+   - `meta/llama-3.1-70b-instruct`
+   - `nvidia/llama-3.1-nemotron-70b-instruct`
+   - или другую доступную на [build.nvidia.com](https://build.nvidia.com/).
+
+Точный список доступных моделей зависит от вашего аккаунта NVIDIA NIM и можно посмотреть через `GET /v1/models`.
+
+## Переменные окружения
+
+| Переменная | Обязательная | По умолчанию | Описание |
+|---|---:|---|---|
+| `NIM_API_KEY` | нет* | пусто | API ключ NVIDIA NIM. *Обязателен, если клиент не передаёт свой `Authorization`. |
+| `NIM_BASE_URL` | нет | `https://integrate.api.nvidia.com/v1` | Базовый URL NVIDIA NIM API. |
+| `PORT` | нет | `8000` | Порт, который задаёт Railway автоматически. |
+
+## Локальный запуск
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Отредактируйте .env: OPENAI_BASE_URL, OPENAI_API_KEY
+# впишите NIM_API_KEY в .env
 
-uvicorn app:app --host 0.0.0.0 --port 8000
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Или:
-
-```bash
-python app.py
-```
-
-## Конфигурация
-
-Переменные окружения (см. `.env.example`):
-
-| Переменная | По умолчанию | Описание |
-|---|---|---|
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Базовый URL OpenAI-compatible upstream |
-| `OPENAI_API_KEY` | пусто | API key для upstream. Если пусто, используется входящий `Authorization` |
-| `INBOUND_API_KEY` | пусто | Если задан, роутер требует `Authorization: Bearer <INBOUND_API_KEY>` от клиента |
-| `HOST` | `0.0.0.0` | Хост сервера |
-| `PORT` | `8000` | Порт сервера |
-| `UPSTREAM_TIMEOUT` | `120` | Таймаут upstream-запроса в секундах |
-
-## Пример запроса
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $INBOUND_API_KEY" \
-  -d '{
-    "model": "meta/llama-3.1-8b-instruct",
-    "messages": [
-      {"role": "user", "content": "Привет! Кто ты?"}
-    ],
-    "temperature": 0.2
-  }'
-```
-
-## Health check
+Проверка:
 
 ```bash
 curl http://localhost:8000/health
+curl http://localhost:8000/v1/models -H "Authorization: Bearer $NIM_API_KEY"
 ```
 
-Ответ:
+## Эндпоинты
 
-```json
-{"status":"ok"}
-```
+- `GET /` — статус прокси
+- `GET /health` — healthcheck
+- `GET /v1/models` — список моделей (проксируется в NVIDIA NIM)
+- `POST /v1/chat/completions` — чат-запросы, включая streaming (`stream: true`)
 
-## Ограничения текущей версии
-
-- Только `POST /v1/chat/completions`.
-- Без streaming (`stream=true` возвращает `400`).
-- Без трансформации специфичных полей моделей; payload проксируется прозрачно.
+Прокси также пробрасывает другие пути `/v1/*` в NVIDIA NIM.
